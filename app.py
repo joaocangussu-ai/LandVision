@@ -1,4 +1,4 @@
-"""LandVision V0.3 — interactive Sentinel-2 field investigation web interface."""
+"""LandVision V0.4 — interactive Sentinel-2 field investigation web interface."""
 import csv
 import io
 import json
@@ -10,7 +10,7 @@ import pandas as pd
 import streamlit as st
 from folium.plugins import Draw, Fullscreen, MiniMap
 from streamlit_folium import st_folium
-from engine import connect, analyze, best_dates, tile_url
+from engine import connect, connectivity_test, field_hectares, MAX_FIELD_HA, analyze, best_dates, tile_url
 
 ROOT = Path(__file__).parent
 SYMBOL = ROOT/'assets'/'simbolo_enviado.png'
@@ -92,7 +92,7 @@ with st.sidebar:
     col_logo,col_title=st.columns([1,3],vertical_alignment='center')
     col_logo.image(str(SYMBOL),use_container_width=True)
     col_title.markdown('### LANDVISION')
-    st.caption('SOYBEAN FIELD INTELLIGENCE · V0.3')
+    st.caption('SOYBEAN FIELD INTELLIGENCE · V0.4')
     st.divider()
     st.markdown('#### 01 · Área de estudo')
     field=st.text_input('Nome do talhão',key='field_name')
@@ -136,21 +136,32 @@ with st.sidebar:
     st.divider()
     search=st.button('Buscar melhores datas (até 30)',use_container_width=True)
     st.caption('Busca cenas do ano escolhido com até 25% de nuvens e prioriza cobertura dentro do talhão.')
+    test_conn=st.button('Testar conexão Earth Engine',use_container_width=True)
+    st.caption('O teste faz uma consulta mínima, sem executar a análise histórica.')
 
 st.markdown('<div class="hero"><h1>LANDVISION</h1><p>Monitoramento multitemporal · Índices espectrais · Pontos de investigação</p></div>',unsafe_allow_html=True)
-st.caption('Interface com a paleta solicitada e o símbolo fornecido. O processamento usa dados reais somente após a conexão com o Earth Engine.')
+st.caption('Processamento real sob demanda: somente após conectar o Earth Engine e clicar em Executar análise.')
+if test_conn:
+    ok, err=connect()
+    if not ok: st.error(err)
+    else:
+        try:
+            if connectivity_test(): st.success('Conexão ativa: Earth Engine respondeu à consulta de teste.')
+            else: st.warning('A conexão inicializou, mas o teste não retornou o resultado esperado.')
+        except Exception as exc:
+            st.error('A inicialização ocorreu, mas a consulta falhou ('+type(exc).__name__+'). Confira API habilitada e permissões IAM; não compartilhe suas credenciais.')
 
 if search:
     if not st.session_state.geometry:st.warning('Desenhe ou importe um talhão antes de pesquisar datas.')
     else:
         ok,err=connect()
-        if not ok:st.error('Configure o Earth Engine em Streamlit Secrets. Consulte README. Detalhe: '+err)
+        if not ok:st.error('Conexão Earth Engine: '+err)
         else:
             with st.spinner('Avaliando cobertura válida do talhão no Sentinel-2...'):
                 try:
                     st.session_state.dates=best_dates(st.session_state.geometry,year)
                     st.session_state.query_year=year
-                except Exception as exc:st.error('Não foi possível buscar datas: '+str(exc))
+                except Exception as exc:st.error('Falha na busca de datas ('+type(exc).__name__+'). Confira área, período e cotas no Earth Engine.')
 if st.session_state.dates and st.session_state.query_year==year:
     date_options={f"{d['date']} | cobertura {d['coverage']:.1f}% | nuvens da cena {d['clouds']:.1f}%":d['date'] for d in st.session_state.dates}
     choice=st.selectbox('Melhores datas Sentinel-2 para o talhão',list(date_options))
@@ -160,7 +171,7 @@ if st.session_state.dates and st.session_state.query_year==year:
 metrics=st.columns(4)
 metrics[0].metric('Talhão',field)
 metrics[1].metric('Visualização',idx)
-metrics[2].metric('Histórico','5 anos anteriores')
+metrics[2].metric('Histórico','5 anos')
 metrics[3].metric('Limite de recorrência',f'{min_hits}/5')
 signature=json.dumps({'geometry':st.session_state.geometry,'year':year,'m1':m1,'m2':m2,'mode':mode,'date':chosen.isoformat(),'index':idx,'hits':min_hits,'valid':min_valid,'ha':min_ha},sort_keys=True)
 if st.session_state.result and signature!=st.session_state.analysis_signature:
@@ -171,13 +182,20 @@ if run:
     if not st.session_state.geometry:st.warning('Desenhe ou importe um talhão antes da análise.')
     else:
         ok,err=connect()
-        if not ok:st.error('Earth Engine ainda não conectado. Configure as credenciais em Secrets conforme README. Detalhe: '+err)
+        if not ok:st.error('Earth Engine não conectado. '+err+' Veja o README.')
         else:
             with st.spinner('Processando a imagem atual e a recorrência histórica. Aguarde...'):
                 try:
+                    # Enforce a conservative area cap before submitting multi-year reductions.
+                    hectares=field_hectares(st.session_state.geometry)
+                    if hectares > MAX_FIELD_HA:
+                        st.warning(f'Área de {hectares:,.1f} ha excede o limite de {MAX_FIELD_HA:,} ha desta versão. Divida o talhão ou reduza a área para preservar a velocidade e as cotas.')
+                        st.stop()
                     out=analyze(st.session_state.geometry,year,m1,m2,mode,chosen,min_hits,min_valid,min_ha,idx)
-                    scenes=out['current_scenes'].getInfo()
-                    valid=out['current_valid'].getInfo()
+                    # One server response for two scalar checks.
+                    from ee import Dictionary
+                    scalars=Dictionary({'scenes':out['current_scenes'],'valid':out['current_valid']}).getInfo()
+                    scenes=scalars['scenes'];valid=scalars['valid']
                     if not scenes or valid is None or not valid:
                         clear_results();st.warning('Sem pixels válidos no talhão para essa data/período. Escolha outra data ou janela.')
                     else:
@@ -194,7 +212,7 @@ if run:
                         st.session_state.points=points;st.session_state.trend=trend;st.session_state.analysis_signature=signature
                         st.success(f'Análise concluída: {scenes} cenas elegíveis na janela atual; {len(points)} regiões exibidas.'+(' Existem mais de 100 regiões; ajuste os filtros para refinar.' if capped else ''))
                 except Exception as exc:
-                    clear_results();st.error('Erro ao processar Earth Engine: '+str(exc))
+                    clear_results();st.error('Falha no processamento ('+type(exc).__name__+'). Consulte os logs privados do Streamlit e confira o tamanho do talhão, a quota e as permissões IAM. Não compartilhe chaves.')
 
 result=st.session_state.result;points=st.session_state.points
 left,right=st.columns(2,gap='medium')
@@ -211,7 +229,7 @@ with right:
     st.markdown('#### MAPA 2 · Recorrência histórica')
     st.caption('Percentual de anos válidos com score NDVI + NDRE + NDMI ≥ 2.')
     st_folium(make_map(st.session_state.geometry,base,overlay=result['history'] if result else None,points=points),height=510,use_container_width=True,key='landvision_map_history',returned_objects=[])
-    st.caption('Legenda: verde = baixa recorrência · amarelo = intermediária · vermelho = alta recorrência; sem cor = sem mínimo de anos válidos ou fora do talhão.')
+    st.caption('LEGENDA · Verde: baixa recorrência | Amarelo: intermediária | Vermelho: alta | Transparente: sem dados válidos suficientes ou fora do talhão. O marcador indica o centroide da região.')
 
 if st.session_state.geometry:
     st.download_button('Exportar talhão · GeoJSON',json.dumps(st.session_state.geometry,ensure_ascii=False,indent=2),'landvision_talhao.geojson','application/geo+json')
@@ -238,4 +256,4 @@ if result:
 else:
     st.info('Importe/desenhe o talhão e execute a análise. O mapa-base não é um resultado de NDVI ou de estresse.')
 st.divider()
-st.caption('LandVision V0.3 · Paleta informada pelo usuário e símbolo enviado · Dados: Sentinel-2 SR Harmonized / Google Earth Engine. Anomalia espectral é um indicador exploratório, não um diagnóstico de nematoides, doença, compactação ou deficiência. Considere cobertura de nuvens, culturas, época de plantio e estádio fenológico. Uso do símbolo deve respeitar as autorizações aplicáveis.')
+st.caption('LandVision V0.4 · Paleta informada pelo usuário e símbolo enviado · Dados: Sentinel-2 SR Harmonized / Google Earth Engine. Anomalia espectral é um indicador exploratório, não um diagnóstico de nematoides, doença, compactação ou deficiência. Considere cobertura de nuvens, culturas, época de plantio e estádio fenológico. Uso do símbolo deve respeitar as autorizações aplicáveis.')
