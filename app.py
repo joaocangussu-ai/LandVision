@@ -1,7 +1,8 @@
-"""LandVision V0.4 — interactive Sentinel-2 field investigation web interface."""
+"""LandVision V0.4.1 — diagnostic update; no private credentials in the code."""
 import csv
 import io
 import json
+import logging
 from datetime import date
 from pathlib import Path
 from xml.sax.saxutils import escape
@@ -92,7 +93,7 @@ with st.sidebar:
     col_logo,col_title=st.columns([1,3],vertical_alignment='center')
     col_logo.image(str(SYMBOL),use_container_width=True)
     col_title.markdown('### LANDVISION')
-    st.caption('SOYBEAN FIELD INTELLIGENCE · V0.4')
+    st.caption('SOYBEAN FIELD INTELLIGENCE · V0.4.1')
     st.divider()
     st.markdown('#### 01 · Área de estudo')
     field=st.text_input('Nome do talhão',key='field_name')
@@ -186,12 +187,15 @@ if run:
         else:
             with st.spinner('Processando a imagem atual e a recorrência histórica. Aguarde...'):
                 try:
+                    stage='Medir a área do talhão'
                     # Enforce a conservative area cap before submitting multi-year reductions.
                     hectares=field_hectares(st.session_state.geometry)
                     if hectares > MAX_FIELD_HA:
                         st.warning(f'Área de {hectares:,.1f} ha excede o limite de {MAX_FIELD_HA:,} ha desta versão. Divida o talhão ou reduza a área para preservar a velocidade e as cotas.')
                         st.stop()
+                    stage='Preparar análise histórica'
                     out=analyze(st.session_state.geometry,year,m1,m2,mode,chosen,min_hits,min_valid,min_ha,idx)
+                    stage='Consultar cenas e pixels válidos da imagem atual'
                     # One server response for two scalar checks.
                     from ee import Dictionary
                     scalars=Dictionary({'scenes':out['current_scenes'],'valid':out['current_valid']}).getInfo()
@@ -199,20 +203,27 @@ if run:
                     if not scenes or valid is None or not valid:
                         clear_results();st.warning('Sem pixels válidos no talhão para essa data/período. Escolha outra data ou janela.')
                     else:
+                        stage='Extrair regiões de recorrência'
                         raw=out['regions'].limit(101).getInfo()['features']
                         capped=len(raw)>100;raw=raw[:100]
                         points=[]
                         for i,feat in enumerate(raw,1):
                             p=feat['properties'];points.append({'id':i,'latitude':float(p['latitude']),'longitude':float(p['longitude']),'area_ha':round(float(p['area_ha']),3),'recurrence_pct':round(float(p['recurrence_pct']),1) if p.get('recurrence_pct') is not None else None,'max_hit_years':int(p['max_hit_years']) if p.get('max_hit_years') is not None else 0})
+                        stage='Criar camada histórica do mapa'
                         history=tile_url(out['recurrence'],{'min':0,'max':100,'palette':['006837','ffffbf','fdae61','d73027']})
+                        stage='Criar camada atual do mapa'
                         current=tile_url(out['current'].select(idx),VIS[idx])
+                        stage='Consultar série temporal do gráfico'
                         trend_raw=out['trend'].getInfo()['features']
                         trend=[f['properties'] for f in trend_raw]
                         st.session_state.result={'current':current,'history':history,'regions':{'type':'FeatureCollection','features':raw},'scenes':scenes,'capped':capped,'index':idx}
                         st.session_state.points=points;st.session_state.trend=trend;st.session_state.analysis_signature=signature
                         st.success(f'Análise concluída: {scenes} cenas elegíveis na janela atual; {len(points)} regiões exibidas.'+(' Existem mais de 100 regiões; ajuste os filtros para refinar.' if capped else ''))
                 except Exception as exc:
-                    clear_results();st.error('Falha no processamento ('+type(exc).__name__+'). Consulte os logs privados do Streamlit e confira o tamanho do talhão, a quota e as permissões IAM. Não compartilhe chaves.')
+                    clear_results()
+                    # Error details stay in the owner-only deployment logs; do not paste Secrets in chat.
+                    logging.exception('LandVision processing failed; stage=%s', stage)
+                    st.error('Falha na etapa: '+stage+' ('+type(exc).__name__+'). Abra Manage app e consulte o final dos registros privados; não compartilhe chaves ou tokens.')
 
 result=st.session_state.result;points=st.session_state.points
 left,right=st.columns(2,gap='medium')
