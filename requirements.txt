@@ -1,6 +1,5 @@
-streamlit>=1.37,<2
+streamlit>=1.40,<2
 folium>=0.17,<1
 streamlit-folium>=0.23,<1
-# Etapa 2 (ativar quando conectar os cálculos GEE):
-# geemap
-# earthengine-api
+earthengine-api>=1.5,<2
+pandas>=2.1,<3
