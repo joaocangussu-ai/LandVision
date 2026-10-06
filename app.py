@@ -1,4 +1,4 @@
-"""LandVision V0.7 — Professional UI over the validated V0.6.1 analytical core."""
+"""LandVision V0.8 — Professional UI + complete analysis export over the validated V0.6.1 analytical core."""
 import base64
 import csv
 import io
@@ -13,6 +13,7 @@ import pandas as pd
 import streamlit as st
 from folium.plugins import Draw, Fullscreen
 from streamlit_folium import st_folium
+from reporting import build_analysis_bundle, slugify
 
 from engine import (
     BANDS,
@@ -179,6 +180,8 @@ INITIAL = {
     'concord_signature': None,
     'ee_concord_yearly': None,
     'concord_details': {},
+    'export_bundle': None,
+    'export_warnings': [],
 }
 for key, value in INITIAL.items():
     st.session_state.setdefault(key, value)
@@ -221,6 +224,8 @@ def clear_main_results():
     st.session_state.analysis_signature = None
     st.session_state.ee_yearly = None
     st.session_state.region_details = {}
+    st.session_state.export_bundle = None
+    st.session_state.export_warnings = []
 
 
 def clear_concordance():
@@ -230,6 +235,8 @@ def clear_concordance():
     st.session_state.concord_signature = None
     st.session_state.ee_concord_yearly = None
     st.session_state.concord_details = {}
+    st.session_state.export_bundle = None
+    st.session_state.export_warnings = []
 
 
 def clear_results():
@@ -419,7 +426,7 @@ with st.sidebar:
     st.markdown(
         f'''<div class="brand-shell"><img class="brand-logo" src="{LOGO_URI}">
         <div><div class="brand-name">LANDVISION</div><div class="brand-sub">GDM Seeds · Field Intelligence</div>
-        <span class="side-version">Professional · V0.7</span></div></div>''',
+        <span class="side-version">Professional · V0.8</span></div></div>''',
         unsafe_allow_html=True,
     )
 
@@ -719,6 +726,14 @@ if run:
                             'capped': capped,
                             'index': idx,
                             'scale': out['scale'],
+                            '_ee_current': out['current_display'],
+                            '_ee_history': out['recurrence'],
+                            'params': {
+                                'year': year, 'm1': m1, 'm2': m2, 'mode': mode,
+                                'date': chosen.isoformat(), 'direction': direction,
+                                'threshold': threshold, 'min_hits': min_hits,
+                                'min_valid': min_valid, 'min_ha': min_ha,
+                            },
                         }
                         st.session_state.points = points
                         st.session_state.trend = trend
@@ -810,6 +825,18 @@ if run_concord:
                             'indices': list(concord_indices),
                             'scale': out['scale'],
                             'min_indices': concord_min_indices,
+                            '_ee_current': out['current_count'],
+                            '_ee_history': out['recurrence'],
+                            'params': {
+                                'year': year, 'm1': m1, 'm2': m2, 'mode': mode,
+                                'date': chosen.isoformat(),
+                                'directions': dict(concord_directions),
+                                'threshold': concord_threshold,
+                                'min_indices': concord_min_indices,
+                                'min_years': concord_min_years,
+                                'min_valid': concord_min_valid,
+                                'min_ha': concord_min_ha,
+                            },
                         }
                         st.session_state.concord_points = points
                         st.session_state.concord_trend = trend
@@ -1169,9 +1196,123 @@ if concord:
     st.caption(f'A concordância foi comparada em grade comum de {concord["scale"]} m. Se qualquer índice selecionado depender de banda Sentinel-2 de 20 m, a comparação multíndice usa 20 m para não criar falsa precisão espacial.')
 
 
+# -----------------------------------------------------------------------------
+# COMPLETE ANALYSIS EXPORT — V0.8
+# -----------------------------------------------------------------------------
+if st.session_state.result:
+    st.markdown('<div class="section-banner"><div class="section-kicker">RELATÓRIO E ARQUIVAMENTO</div><div class="section-title">Salvar análise completa</div><div class="section-copy">Gere um único arquivo ZIP com relatório PDF, mapas analíticos, gráficos, CSV, KML, GeoJSON e os parâmetros usados. O processamento só ocorre quando solicitado.</div></div>', unsafe_allow_html=True)
+    ex1, ex2, ex3 = st.columns(3)
+    ex1.metric('Relatório', 'PDF incluído')
+    ex2.metric('Dados', 'CSV · KML · GeoJSON')
+    ex3.metric('Credenciais', 'Nunca incluídas')
+
+    st.caption('As imagens exportadas são camadas analíticas do Earth Engine com o limite do talhão, sem mapa-base de terceiros. Isso torna o pacote mais leve e reproduzível.')
+
+    if st.button('Preparar análise completa · ZIP', type='primary', use_container_width=True):
+        ok, err = connect()
+        if not ok:
+            st.error('Earth Engine não conectado. ' + err)
+        else:
+            with st.spinner('Gerando mapas, gráficos, PDF e pacote ZIP. Aguarde...'):
+                try:
+                    result_for_export = st.session_state.result
+                    concord_for_export = st.session_state.concord_result
+                    main_params = dict(result_for_export.get('params', {}))
+                    period_label = (
+                        main_params.get('date', '')
+                        if main_params.get('mode') == 'DATA ÚNICA'
+                        else f"{MONTHS[int(main_params.get('m1', 1))-1]} a {MONTHS[int(main_params.get('m2', 1))-1]} de {main_params.get('year', '')}"
+                    )
+                    parameters = {
+                        'app_version': '0.8',
+                        'field_name': field,
+                        'index': result_for_export.get('index'),
+                        'scale': result_for_export.get('scale'),
+                        'period_label': period_label,
+                        'analysis': main_params,
+                        'concordance': ({
+                            'indices': concord_for_export.get('indices', []),
+                            'scale': concord_for_export.get('scale'),
+                            'min_indices': concord_for_export.get('min_indices'),
+                            **concord_for_export.get('params', {}),
+                        } if concord_for_export else None),
+                    }
+                    map_specs = [
+                        {
+                            'name': 'main_current',
+                            'filename': f"mapa_{result_for_export.get('index','indice').lower()}_atual.png",
+                            'image': result_for_export['_ee_current'],
+                            'vis': VIS[result_for_export.get('index', idx)],
+                        },
+                        {
+                            'name': 'main_history',
+                            'filename': 'mapa_recorrencia_historica.png',
+                            'image': result_for_export['_ee_history'],
+                            'vis': RECURRENCE_VIS,
+                        },
+                    ]
+                    if concord_for_export:
+                        map_specs.extend([
+                            {
+                                'name': 'concord_current',
+                                'filename': 'mapa_concordancia_atual.png',
+                                'image': concord_for_export['_ee_current'],
+                                'vis': {
+                                    'min': 0,
+                                    'max': len(concord_for_export.get('indices', [])),
+                                    'palette': CONCORD_PALETTE[:len(concord_for_export.get('indices', [])) + 1],
+                                },
+                            },
+                            {
+                                'name': 'concord_history',
+                                'filename': 'mapa_concordancia_recorrencia.png',
+                                'image': concord_for_export['_ee_history'],
+                                'vis': RECURRENCE_VIS,
+                            },
+                        ])
+                    bundle, warnings = build_analysis_bundle(
+                        logo_path=SYMBOL,
+                        field_name=field,
+                        geometry=st.session_state.geometry,
+                        parameters=parameters,
+                        main_result=result_for_export,
+                        main_points=st.session_state.points,
+                        main_trend=st.session_state.trend,
+                        concord_result=concord_for_export,
+                        concord_points=st.session_state.concord_points,
+                        concord_trend=st.session_state.concord_trend,
+                        region_details=st.session_state.region_details,
+                        concord_details=st.session_state.concord_details,
+                        map_specs=map_specs,
+                    )
+                    st.session_state.export_bundle = bundle
+                    st.session_state.export_warnings = warnings
+                    st.success('Pacote pronto. O ZIP inclui o PDF e todos os arquivos disponíveis desta análise.')
+                except Exception as exc:
+                    logging.exception('LandVision complete export failed')
+                    st.error('Falha ao preparar o pacote (' + type(exc).__name__ + '). Consulte os registros privados; nenhum Secret é incluído na exportação.')
+
+    if st.session_state.export_warnings:
+        with st.expander('Avisos da exportação'):
+            for warning in st.session_state.export_warnings:
+                st.warning(warning)
+
+    if st.session_state.export_bundle:
+        filename = f"LandVision_{slugify(field)}_{date.today().isoformat()}.zip"
+        st.download_button(
+            'Baixar análise completa · ZIP',
+            st.session_state.export_bundle,
+            filename,
+            'application/zip',
+            type='primary',
+            use_container_width=True,
+        )
+        st.caption('O arquivo é gerado em memória e baixado diretamente pelo navegador. Nenhum Secret ou chave JSON entra no pacote.')
+
+
 st.divider()
 st.caption(
-    'LandVision V0.7 Professional · Núcleo analítico V0.6.1 preservado · Dados: Sentinel-2 SR Harmonized / Google Earth Engine. '
+    'LandVision V0.8 Professional · Exportação completa · Núcleo analítico V0.6.1 preservado · Dados: Sentinel-2 SR Harmonized / Google Earth Engine. '
     'Anomalia espectral e concordância são indicadores exploratórios, não diagnósticos de nematoides, doença, compactação, deficiência ou estresse hídrico. '
     'Considere cultura, rotação, data de plantio, estádio fenológico, solo e cobertura de nuvens.'
 )
