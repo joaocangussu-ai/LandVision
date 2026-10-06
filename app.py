@@ -1,4 +1,4 @@
-"""LandVision V0.6 — stable V0.5 core + optional multi-index concordance."""
+"""LandVision V0.6.1 — V0.6 + automatic regional interpretation summary."""
 import csv
 import io
 import json
@@ -56,6 +56,9 @@ st.markdown(
     .stButton>button[kind="primary"]:hover{background:#a9b65c;border-color:#95A237;color:#0C243A}
     [data-testid="stMetric"]{background:white;border:1px solid #e0e4e8;border-radius:12px;padding:13px}
     .stDownloadButton button{border-color:#95A237}
+    .region-summary{background:white;border:1px solid #dfe4e7;border-left:6px solid #95A237;border-radius:12px;padding:18px 20px;margin:10px 0 14px 0}
+    .region-summary h4{margin:0 0 8px 0;color:#0C243A}
+    .region-summary p{margin:5px 0;color:#243746}
     </style>''',
     unsafe_allow_html=True,
 )
@@ -245,6 +248,105 @@ def kml_points(points):
     return ''.join(parts) + '</Document></kml>'
 
 
+
+def _safe_float(value, default=0.0):
+    try:
+        if pd.isna(value):
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _priority_label(point):
+    """Exploratory priority based only on LandVision recurrence/concordance outputs."""
+    years = int(_safe_float(point.get('max_concord_years'), 0))
+    indices = int(_safe_float(point.get('max_indices_same_year'), 0))
+    recurrence = _safe_float(point.get('recurrence_pct'), 0)
+    if years >= 5 and indices >= 3 and recurrence >= 60:
+        return 'MUITO ALTA'
+    if (years >= 4 and indices >= 3) or (years >= 4 and recurrence >= 50):
+        return 'ALTA'
+    if years >= 3 and indices >= 2:
+        return 'MODERADA'
+    return 'EXPLORATÓRIA'
+
+
+def _concordance_region_summary(point, detail_df, indices, min_indices, scale):
+    """Build a deterministic, non-diagnostic summary from already computed results."""
+    frame = detail_df.sort_values('year').copy()
+    if frame.empty:
+        return None
+    reference_year = int(frame['year'].max())
+    historical = frame[frame['year'] < reference_year]
+    current = frame[frame['year'] == reference_year]
+
+    center_counts = {}
+    valid_counts = {}
+    for name in indices:
+        col = name + '_center'
+        if col not in historical:
+            center_counts[name] = 0
+            valid_counts[name] = 0
+            continue
+        vals = pd.to_numeric(historical[col], errors='coerce')
+        valid_counts[name] = int(vals.notna().sum())
+        center_counts[name] = int((vals.fillna(-1) >= .5).sum())
+
+    common_valid = 0
+    center_concord_years = 0
+    if not historical.empty:
+        center_cols = [name + '_center' for name in indices if name + '_center' in historical]
+        if center_cols:
+            numeric = historical[center_cols].apply(pd.to_numeric, errors='coerce')
+            valid_mask = numeric.notna().all(axis=1)
+            common_valid = int(valid_mask.sum())
+            if common_valid:
+                center_concord_years = int(((numeric.fillna(0) >= .5).sum(axis=1) >= min_indices)[valid_mask].sum())
+
+    current_anomalous = []
+    if not current.empty:
+        row = current.iloc[0]
+        for name in indices:
+            val = row.get(name + '_center')
+            if pd.notna(val) and _safe_float(val) >= .5:
+                current_anomalous.append(name)
+
+    max_years = int(_safe_float(point.get('max_concord_years'), 0))
+    max_indices = int(_safe_float(point.get('max_indices_same_year'), 0))
+    recurrence = _safe_float(point.get('recurrence_pct'), 0)
+    area = _safe_float(point.get('area_ha'), 0)
+    priority = _priority_label(point)
+
+    recurrent_names = [name for name in indices if center_counts.get(name, 0) >= 3]
+    if priority in ('MUITO ALTA', 'ALTA'):
+        interpretation = ('Padrão espacial multiespectral recorrente. Esta região merece prioridade de inspeção de campo, '
+                          'especialmente se o padrão também coincidir com informações de solo, drenagem, manejo ou produtividade.')
+    elif priority == 'MODERADA':
+        interpretation = ('Há repetição espacial suficiente para justificar acompanhamento. A intensidade e os índices envolvidos '
+                          'devem ser comparados com o histórico agronômico antes de priorizar intervenção.')
+    else:
+        interpretation = ('O sinal é exploratório. Use-o como indicação de onde conferir dados adicionais, sem interpretar a anomalia '
+                          'como diagnóstico de uma causa específica.')
+
+    return {
+        'priority': priority,
+        'reference_year': reference_year,
+        'area': area,
+        'recurrence': recurrence,
+        'max_years': max_years,
+        'max_indices': max_indices,
+        'center_counts': center_counts,
+        'valid_counts': valid_counts,
+        'common_valid': common_valid,
+        'center_concord_years': center_concord_years,
+        'current_anomalous': current_anomalous,
+        'recurrent_names': recurrent_names,
+        'interpretation': interpretation,
+        'scale': scale,
+    }
+
+
 # -----------------------------------------------------------------------------
 # SIDEBAR
 # -----------------------------------------------------------------------------
@@ -252,7 +354,7 @@ with st.sidebar:
     col_logo, col_title = st.columns([1, 3], vertical_alignment='center')
     col_logo.image(str(SYMBOL), use_container_width=True)
     col_title.markdown('### LANDVISION')
-    st.caption('SOYBEAN FIELD INTELLIGENCE · V0.6')
+    st.caption('SOYBEAN FIELD INTELLIGENCE · V0.6.1')
     st.divider()
 
     st.markdown('#### 01 · Área de estudo')
@@ -908,6 +1010,47 @@ if concord:
             rows = st.session_state.concord_details[c_selected]
             detail_df = pd.DataFrame(rows).sort_values('year')
 
+            summary = _concordance_region_summary(
+                cpoints[c_selected - 1],
+                detail_df,
+                concord['indices'],
+                concord['min_indices'],
+                concord['scale'],
+            )
+            if summary:
+                st.markdown('#### Resumo automático da região')
+                r1, r2, r3, r4 = st.columns(4)
+                r1.metric('Prioridade exploratória', summary['priority'])
+                r2.metric('Área da região', f"{summary['area']:.2f} ha")
+                r3.metric('Máx. concordância', f"{summary['max_years']}/5 anos")
+                r4.metric('Resolução efetiva', f"{summary['scale']} m")
+
+                recurrence_by_index = ' · '.join(
+                    f"{name}: {summary['center_counts'][name]}/{summary['valid_counts'][name]}"
+                    for name in concord['indices']
+                )
+                current_text = (
+                    ', '.join(summary['current_anomalous'])
+                    if summary['current_anomalous'] else 'nenhum dos índices selecionados no centroide aproximado'
+                )
+                recurrent_text = (
+                    ', '.join(summary['recurrent_names'])
+                    if summary['recurrent_names'] else 'nenhum índice atingiu 3 ocorrências no centroide aproximado'
+                )
+                st.markdown(
+                    f"""<div class="region-summary">
+                    <h4>Região {c_selected} · {summary['priority']}</h4>
+                    <p><b>Recorrência espacial da região:</b> média de {summary['recurrence']:.1f}% nos pixels da região; algum pixel atingiu concordância em até {summary['max_years']} dos 5 anos históricos.</p>
+                    <p><b>Mesmo ponto aproximado (centroide):</b> concordância de pelo menos {concord['min_indices']} índices em {summary['center_concord_years']}/{summary['common_valid']} anos com dados comuns.</p>
+                    <p><b>Recorrência por índice no centroide:</b> {recurrence_by_index}.</p>
+                    <p><b>Índices mais recorrentes nesse ponto:</b> {recurrent_text}.</p>
+                    <p><b>Período de referência ({summary['reference_year']}):</b> anomalia em {current_text}.</p>
+                    <p><b>Interpretação:</b> {summary['interpretation']}</p>
+                    </div>""",
+                    unsafe_allow_html=True,
+                )
+                st.caption('Resumo automático baseado somente nos resultados espectrais do LandVision. Prioridade exploratória não é diagnóstico agronômico e deve ser validada no campo.')
+
             matrix = pd.DataFrame({'Ano': detail_df['year']})
             for name in concord['indices']:
                 center_col = name + '_center'
@@ -943,7 +1086,7 @@ if concord:
 
 st.divider()
 st.caption(
-    'LandVision V0.6 · V0.5 preservada + Concordância Multíndice opcional · Dados: Sentinel-2 SR Harmonized / Google Earth Engine. '
+    'LandVision V0.6.1 · V0.6 preservada + Resumo Automático de Região · Dados: Sentinel-2 SR Harmonized / Google Earth Engine. '
     'Anomalia espectral e concordância são indicadores exploratórios, não diagnósticos de nematoides, doença, compactação, deficiência ou estresse hídrico. '
     'Considere cultura, rotação, data de plantio, estádio fenológico, solo e cobertura de nuvens.'
 )
