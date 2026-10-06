@@ -1,4 +1,5 @@
-"""LandVision V0.6.1 — V0.6 + automatic regional interpretation summary."""
+"""LandVision V0.7 — Professional UI over the validated V0.6.1 analytical core."""
+import base64
 import csv
 import io
 import json
@@ -32,6 +33,7 @@ from engine import (
 
 ROOT = Path(__file__).parent
 SYMBOL = ROOT / 'assets' / 'simbolo_enviado.png'
+LOGO_URI = 'data:image/png;base64,' + base64.b64encode(SYMBOL.read_bytes()).decode('ascii')
 st.set_page_config(
     page_title='LandVision | Field Intelligence',
     page_icon=str(SYMBOL),
@@ -46,19 +48,82 @@ GREY = '#919CA8'
 
 st.markdown(
     '''<style>
-    .stApp{background:#F1F1F1;color:#0C243A}
-    [data-testid="stSidebar"]{background:#0C243A}
-    [data-testid="stSidebar"] label,[data-testid="stSidebar"] h1,[data-testid="stSidebar"] h2,[data-testid="stSidebar"] h3,[data-testid="stSidebar"] h4,[data-testid="stSidebar"] p,[data-testid="stSidebar"] [data-testid="stCaptionContainer"], [data-testid="stSidebar"] .stMarkdown{color:#F1F1F1!important}
-    .hero{background:linear-gradient(105deg,#0C243A,#2C3D20);border-radius:15px;padding:25px 29px;color:#fff;margin-bottom:13px}
-    .hero h1{color:#fff;margin:0;font-size:2.1rem;letter-spacing:.05em}
-    .hero p{color:#f1f1f1;margin:7px 0 0}
-    .stButton>button[kind="primary"]{background:#95A237;color:#0C243A;border:1px solid #95A237;font-weight:700}
-    .stButton>button[kind="primary"]:hover{background:#a9b65c;border-color:#95A237;color:#0C243A}
-    [data-testid="stMetric"]{background:white;border:1px solid #e0e4e8;border-radius:12px;padding:13px}
-    .stDownloadButton button{border-color:#95A237}
-    .region-summary{background:white;border:1px solid #dfe4e7;border-left:6px solid #95A237;border-radius:12px;padding:18px 20px;margin:10px 0 14px 0}
-    .region-summary h4{margin:0 0 8px 0;color:#0C243A}
-    .region-summary p{margin:5px 0;color:#243746}
+    :root{
+      --lv-navy:#0C243A;--lv-navy-2:#15374E;--lv-dark:#2C3D20;--lv-green:#95A237;
+      --lv-green-2:#B1BD55;--lv-muted:#71808D;--lv-bg:#F4F6F3;--lv-card:#FFFFFF;
+      --lv-border:rgba(12,36,58,.10);--lv-shadow:0 14px 34px rgba(12,36,58,.08);
+    }
+    html,body,[class*="css"]{font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+    .stApp{
+      color:var(--lv-navy);
+      background:
+        radial-gradient(circle at 6% -4%, rgba(149,162,55,.17) 0, transparent 28rem),
+        radial-gradient(circle at 100% 4%, rgba(12,36,58,.10) 0, transparent 34rem),
+        linear-gradient(180deg,#F9FAF8 0%,#F3F5F2 48%,#EEF2EF 100%);
+      background-attachment:fixed;
+    }
+    [data-testid="stAppViewContainer"]>.main{background:transparent}
+    .block-container{max-width:1500px;padding-top:1.35rem;padding-bottom:3rem}
+    [data-testid="stSidebar"]{
+      background:
+        radial-gradient(rgba(255,255,255,.055) 1px,transparent 1px),
+        linear-gradient(180deg,#0B263D 0%,#0C243A 58%,#122E43 100%);
+      background-size:22px 22px,auto;
+      border-right:1px solid rgba(255,255,255,.07);
+    }
+    [data-testid="stSidebar"]>div:first-child{padding-top:1rem}
+    [data-testid="stSidebar"] label,[data-testid="stSidebar"] h1,[data-testid="stSidebar"] h2,
+    [data-testid="stSidebar"] h3,[data-testid="stSidebar"] h4,[data-testid="stSidebar"] p,
+    [data-testid="stSidebar"] [data-testid="stCaptionContainer"], [data-testid="stSidebar"] .stMarkdown{
+      color:#F5F7F2!important
+    }
+    [data-testid="stSidebar"] .stTextInput input,[data-testid="stSidebar"] .stNumberInput input,
+    [data-testid="stSidebar"] [data-baseweb="select"]>div{
+      background:rgba(255,255,255,.96);border-radius:10px;border-color:rgba(255,255,255,.18)
+    }
+    .brand-shell{display:flex;align-items:center;gap:13px;padding:12px 11px 15px;margin:0 0 6px;border-bottom:1px solid rgba(255,255,255,.10)}
+    .brand-logo{width:58px;height:58px;object-fit:contain;background:white;border-radius:14px;padding:5px;box-shadow:0 8px 24px rgba(0,0,0,.18)}
+    .brand-name{font-size:1.12rem;font-weight:800;letter-spacing:.08em;color:#fff;line-height:1.1}
+    .brand-sub{font-size:.68rem;letter-spacing:.10em;color:#BFC8CF;margin-top:5px;text-transform:uppercase}
+    .side-version{display:inline-block;margin-top:7px;padding:3px 8px;border-radius:999px;background:rgba(149,162,55,.16);color:#DCE7A1;font-size:.69rem;font-weight:700}
+    .hero-professional{
+      position:relative;overflow:hidden;border-radius:24px;padding:31px 34px;margin-bottom:14px;
+      background:linear-gradient(120deg,#071D30 0%,#0C243A 48%,#263B22 100%);
+      box-shadow:0 22px 55px rgba(12,36,58,.16);border:1px solid rgba(255,255,255,.10)
+    }
+    .hero-professional:before{content:"";position:absolute;width:420px;height:420px;border-radius:50%;right:-135px;top:-220px;border:1px solid rgba(177,189,85,.22);box-shadow:0 0 0 55px rgba(177,189,85,.045),0 0 0 110px rgba(177,189,85,.03)}
+    .hero-professional:after{content:"";position:absolute;inset:0;background:linear-gradient(135deg,transparent 55%,rgba(149,162,55,.08));pointer-events:none}
+    .hero-inner{position:relative;z-index:1;display:flex;align-items:center;gap:23px}
+    .hero-logo-wrap{width:92px;height:92px;min-width:92px;border-radius:22px;background:rgba(255,255,255,.96);display:flex;align-items:center;justify-content:center;box-shadow:0 12px 26px rgba(0,0,0,.18)}
+    .hero-logo{width:78px;height:78px;object-fit:contain}
+    .hero-eyebrow{font-size:.72rem;color:#D4DF8F;letter-spacing:.16em;font-weight:800;text-transform:uppercase;margin-bottom:6px}
+    .hero-title{font-size:2.42rem;line-height:1.03;color:#fff;font-weight:850;letter-spacing:.055em;margin:0}
+    .hero-copy{font-size:1rem;color:#DDE5E8;margin-top:9px;max-width:820px}
+    .hero-chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
+    .hero-chip{font-size:.76rem;font-weight:700;color:#EFF3F5;background:rgba(255,255,255,.075);border:1px solid rgba(255,255,255,.12);padding:6px 10px;border-radius:999px}
+    .hero-chip.accent{color:#EFF4CA;border-color:rgba(177,189,85,.32);background:rgba(149,162,55,.12)}
+    .info-bar{display:flex;justify-content:space-between;gap:14px;align-items:center;background:rgba(255,255,255,.72);border:1px solid var(--lv-border);box-shadow:0 8px 24px rgba(12,36,58,.04);backdrop-filter:blur(8px);border-radius:14px;padding:10px 14px;margin:0 0 16px;color:#536573;font-size:.84rem}
+    .status-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#95A237;box-shadow:0 0 0 4px rgba(149,162,55,.13);margin-right:8px}
+    [data-testid="stMetric"]{background:rgba(255,255,255,.92);border:1px solid var(--lv-border);border-radius:16px;padding:15px 16px;box-shadow:0 10px 28px rgba(12,36,58,.055)}
+    [data-testid="stMetricLabel"]{color:#697985}
+    [data-testid="stMetricValue"]{color:#0C243A;font-weight:740}
+    .section-banner{margin:26px 0 11px;padding:0 0 10px;border-bottom:1px solid rgba(12,36,58,.10)}
+    .section-kicker{font-size:.69rem;letter-spacing:.13em;font-weight:800;color:#95A237;text-transform:uppercase}
+    .section-title{font-size:1.45rem;font-weight:800;color:#0C243A;margin-top:2px}
+    .section-copy{font-size:.88rem;color:#6F7E89;margin-top:3px;max-width:950px}
+    .region-summary{background:linear-gradient(135deg,#FFFFFF 0%,#F7F9F2 100%);border:1px solid rgba(149,162,55,.28);border-left:6px solid #95A237;border-radius:16px;padding:19px 21px;margin:10px 0 14px;box-shadow:0 12px 30px rgba(12,36,58,.055)}
+    .region-summary h4{margin:0 0 8px;color:#0C243A}.region-summary p{margin:6px 0;color:#344957}
+    .summary-callout{background:linear-gradient(115deg,rgba(12,36,58,.97),rgba(44,61,32,.96));border-radius:16px;padding:16px 18px;color:white;margin:10px 0 14px;box-shadow:0 14px 30px rgba(12,36,58,.12)}
+    .summary-callout b{color:#E8F0B2}.summary-callout small{color:#CBD5DA}
+    iframe{border-radius:16px!important}
+    [data-testid="stDataFrame"]{border-radius:14px;overflow:hidden;border:1px solid rgba(12,36,58,.08)}
+    .stButton>button,.stDownloadButton>button{border-radius:11px;min-height:2.65rem;font-weight:680;transition:.16s ease;border-color:rgba(12,36,58,.16)}
+    .stButton>button:hover,.stDownloadButton>button:hover{transform:translateY(-1px);box-shadow:0 8px 18px rgba(12,36,58,.09);border-color:#95A237;color:#0C243A}
+    .stButton>button[kind="primary"]{background:linear-gradient(135deg,#A7B444,#95A237);color:#0C243A;border:none;box-shadow:0 9px 22px rgba(149,162,55,.22)}
+    .stButton>button[kind="primary"]:hover{background:linear-gradient(135deg,#B5C15A,#9EAA3D);color:#0C243A}
+    [data-testid="stExpander"]{background:rgba(255,255,255,.72);border-radius:12px;border-color:rgba(12,36,58,.08)}
+    hr{border-color:rgba(12,36,58,.09)!important}
+    @media(max-width:800px){.hero-professional{padding:23px 20px}.hero-logo-wrap{width:70px;height:70px;min-width:70px}.hero-logo{width:58px;height:58px}.hero-title{font-size:1.75rem}.hero-inner{gap:14px}.info-bar{display:block}}
     </style>''',
     unsafe_allow_html=True,
 )
@@ -351,11 +416,12 @@ def _concordance_region_summary(point, detail_df, indices, min_indices, scale):
 # SIDEBAR
 # -----------------------------------------------------------------------------
 with st.sidebar:
-    col_logo, col_title = st.columns([1, 3], vertical_alignment='center')
-    col_logo.image(str(SYMBOL), use_container_width=True)
-    col_title.markdown('### LANDVISION')
-    st.caption('SOYBEAN FIELD INTELLIGENCE · V0.6.1')
-    st.divider()
+    st.markdown(
+        f'''<div class="brand-shell"><img class="brand-logo" src="{LOGO_URI}">
+        <div><div class="brand-name">LANDVISION</div><div class="brand-sub">GDM Seeds · Field Intelligence</div>
+        <span class="side-version">Professional · V0.7</span></div></div>''',
+        unsafe_allow_html=True,
+    )
 
     st.markdown('#### 01 · Área de estudo')
     field = st.text_input('Nome do talhão', key='field_name')
@@ -494,10 +560,19 @@ with st.sidebar:
 # HEADER / CONNECTION / DATE SEARCH
 # -----------------------------------------------------------------------------
 st.markdown(
-    '<div class="hero"><h1>LANDVISION</h1><p>Monitoramento multitemporal · Índices espectrais · Concordância espacial · Pontos de investigação</p></div>',
+    f'''<div class="hero-professional"><div class="hero-inner">
+      <div class="hero-logo-wrap"><img class="hero-logo" src="{LOGO_URI}"></div>
+      <div><div class="hero-eyebrow">Satellite Field Intelligence · GDM Seeds</div>
+      <div class="hero-title">LANDVISION</div>
+      <div class="hero-copy">Inteligência espacial para monitoramento multitemporal, recorrência histórica e investigação de zonas agrícolas.</div>
+      <div class="hero-chips"><span class="hero-chip accent">Sentinel-2 SR Harmonized</span><span class="hero-chip">Google Earth Engine</span><span class="hero-chip">Histórico 5 anos</span><span class="hero-chip">Concordância Multíndice</span></div>
+      </div></div></div>''',
     unsafe_allow_html=True,
 )
-st.caption('Processamento real sob demanda. A Concordância Multíndice só é calculada quando solicitada.')
+st.markdown(
+    '<div class="info-bar"><span><span class="status-dot"></span>Processamento sob demanda · núcleo analítico V0.6.1 preservado.</span><span>Resultados espectrais exploratórios · validar em campo</span></div>',
+    unsafe_allow_html=True,
+)
 
 if test_conn:
     ok, err = connect()
@@ -754,6 +829,7 @@ if run_concord:
 # -----------------------------------------------------------------------------
 # MAIN MAPS
 # -----------------------------------------------------------------------------
+st.markdown('<div class="section-banner"><div class="section-kicker">VISUALIZAÇÃO PRINCIPAL</div><div class="section-title">Situação atual e recorrência histórica</div><div class="section-copy">Os dois mapas usam o mesmo índice selecionado. O mapa histórico destaca onde a anomalia reaparece espacialmente nos anos anteriores.</div></div>', unsafe_allow_html=True)
 result = st.session_state.result
 points = st.session_state.points
 left, right = st.columns(2, gap='medium')
@@ -900,9 +976,7 @@ else:
 # -----------------------------------------------------------------------------
 concord = st.session_state.concord_result
 if concord:
-    st.divider()
-    st.markdown('## Concordância Multíndice · mesmo local')
-    st.caption('Esta seção é independente da análise individual acima. Ela procura pixels onde índices diferentes apresentam anomalia simultaneamente e verifica se essa concordância reaparece nos cinco anos anteriores.')
+    st.markdown('<div class="section-banner"><div class="section-kicker">INTELIGÊNCIA ESPACIAL</div><div class="section-title">Concordância Multíndice · mesmo local</div><div class="section-copy">Cruza índices diferentes na mesma posição e verifica se o padrão reaparece historicamente. A análise só é executada quando solicitada.</div></div>', unsafe_allow_html=True)
 
     cm = st.columns(4)
     cm[0].metric('Índices', len(concord['indices']))
@@ -957,6 +1031,16 @@ if concord:
     cpoints = st.session_state.concord_points
     st.markdown('### Regiões prioritárias · concordância multíndice')
     if cpoints:
+        highest_years = max(int(_safe_float(p.get('max_concord_years'), 0)) for p in cpoints)
+        highest_indices = max(int(_safe_float(p.get('max_indices_same_year'), 0)) for p in cpoints)
+        largest_area = max(_safe_float(p.get('area_ha'), 0) for p in cpoints)
+        st.markdown(
+            f'''<div class="summary-callout"><b>Resumo geral da concordância</b><br>
+            Foram identificadas <b>{len(cpoints)} regiões prioritárias</b>. A maior recorrência observada foi de <b>{highest_years}/5 anos</b>,
+            com até <b>{highest_indices} índices anômalos no mesmo ano</b>. A maior região delimitada possui <b>{largest_area:.2f} ha</b>.
+            <br><small>Selecione uma região abaixo para gerar o resumo automático detalhado índice × ano.</small></div>''',
+            unsafe_allow_html=True,
+        )
         cpoint_df = pd.DataFrame(cpoints).rename(columns={
             'id': 'Ponto',
             'latitude': 'Latitude',
@@ -977,14 +1061,15 @@ if concord:
         e2.download_button('Concordância · GeoJSON', json.dumps(concord['regions'], ensure_ascii=False), 'landvision_concordancia_regioes.geojson', 'application/geo+json', use_container_width=True)
         e3.download_button('Concordância · KML', kml_points(cpoints), 'landvision_concordancia_pontos.kml', 'application/vnd.google-earth.kml+xml', use_container_width=True)
 
-        st.markdown('#### Matriz índice × ano em uma região')
+        st.markdown('#### Resumo automático e matriz índice × ano')
         c_selected = st.selectbox(
             'Região multíndice para investigar',
             range(1, len(cpoints) + 1),
             format_func=lambda number: f'Ponto {number} — {cpoints[number-1]["area_ha"]:.2f} ha',
             key='concord_region_selector',
         )
-        if st.button('Consultar matriz desta região', use_container_width=True):
+        st.caption('Escolha uma região e clique abaixo. O resumo automático aparecerá imediatamente antes da matriz histórica.')
+        if st.button('Gerar resumo automático desta região', type='primary', use_container_width=True):
             if not st.session_state.ee_concord_yearly:
                 st.warning('Execute novamente a concordância antes de consultar uma região.')
             else:
@@ -1018,7 +1103,7 @@ if concord:
                 concord['scale'],
             )
             if summary:
-                st.markdown('#### Resumo automático da região')
+                st.markdown('#### Resumo automático da região · leitura rápida')
                 r1, r2, r3, r4 = st.columns(4)
                 r1.metric('Prioridade exploratória', summary['priority'])
                 r2.metric('Área da região', f"{summary['area']:.2f} ha")
@@ -1086,7 +1171,7 @@ if concord:
 
 st.divider()
 st.caption(
-    'LandVision V0.6.1 · V0.6 preservada + Resumo Automático de Região · Dados: Sentinel-2 SR Harmonized / Google Earth Engine. '
+    'LandVision V0.7 Professional · Núcleo analítico V0.6.1 preservado · Dados: Sentinel-2 SR Harmonized / Google Earth Engine. '
     'Anomalia espectral e concordância são indicadores exploratórios, não diagnósticos de nematoides, doença, compactação, deficiência ou estresse hídrico. '
     'Considere cultura, rotação, data de plantio, estádio fenológico, solo e cobertura de nuvens.'
 )
