@@ -1,6 +1,6 @@
 """LandVision report/export utilities.
 
-Builds an in-memory ZIP with a PDF report plus machine-readable analysis files.
+Builds in-memory ZIP exports with a PDF report plus the essential analysis files.
 No credentials are written to the package.
 """
 from __future__ import annotations
@@ -116,7 +116,7 @@ def chart_png(trend, title, value_key, ylabel, chart_type='bar') -> bytes | None
     return out.getvalue()
 
 
-def earth_engine_thumb(image, vis, feature, dimensions=1200) -> bytes:
+def earth_engine_thumb(image, vis, feature, dimensions=850) -> bytes:
     """Download a clean PNG of one analytical Earth Engine layer.
 
     The image contains the analysis raster and a white field boundary, without a
@@ -134,9 +134,120 @@ def earth_engine_thumb(image, vis, feature, dimensions=1200) -> bytes:
         'dimensions': dimensions,
         'format': 'png',
     })
-    req = urllib.request.Request(url, headers={'User-Agent': 'LandVision/0.8'})
+    req = urllib.request.Request(url, headers={'User-Agent': 'LandVision/0.8.1'})
     with urllib.request.urlopen(req, timeout=90) as response:
         return response.read()
+
+
+def _geometry_bounds(feature: dict):
+    """Return min_lon, min_lat, max_lon, max_lat for Polygon/MultiPolygon GeoJSON."""
+    geometry = (feature or {}).get('geometry', feature or {})
+    coords = geometry.get('coordinates') or []
+    pairs = []
+
+    def walk(value):
+        if not isinstance(value, (list, tuple)):
+            return
+        if len(value) >= 2 and all(isinstance(v, (int, float)) for v in value[:2]):
+            pairs.append((float(value[0]), float(value[1])))
+            return
+        for item in value:
+            walk(item)
+
+    walk(coords)
+    if not pairs:
+        return None
+    lons = [p[0] for p in pairs]
+    lats = [p[1] for p in pairs]
+    return min(lons), min(lats), max(lons), max(lats)
+
+
+def annotate_investigation_points(
+    png_bytes: bytes,
+    points: list,
+    feature: dict,
+    max_points: int = 25,
+) -> bytes:
+    """Draw P1, P2... over the exported analytical PNG.
+
+    The report thumbnails use the bounding box of the field geometry. For a
+    normal agricultural field this linear lon/lat-to-pixel conversion is a very
+    good approximation and keeps the exported point labels aligned with the
+    investigation centroids shown in the app.
+    """
+    if not png_bytes or not points:
+        return png_bytes
+
+    bounds = _geometry_bounds(feature)
+    if not bounds:
+        return png_bytes
+    min_lon, min_lat, max_lon, max_lat = bounds
+    if max_lon <= min_lon or max_lat <= min_lat:
+        return png_bytes
+
+    try:
+        image_array = plt.imread(io.BytesIO(png_bytes), format='png')
+    except Exception:
+        return png_bytes
+
+    height_px, width_px = image_array.shape[:2]
+    dpi = 150
+    fig = plt.figure(figsize=(width_px / dpi, height_px / dpi), dpi=dpi)
+    ax = fig.add_axes([0, 0, 1, 1])
+    ax.imshow(image_array)
+
+    label_font = max(7.0, min(10.0, width_px / 95.0))
+    marker_size = max(70, min(145, width_px * 0.12))
+
+    for point in list(points)[:max_points]:
+        try:
+            lon = float(point.get('longitude'))
+            lat = float(point.get('latitude'))
+        except (TypeError, ValueError):
+            continue
+        if not (min_lon <= lon <= max_lon and min_lat <= lat <= max_lat):
+            continue
+
+        x = (lon - min_lon) / (max_lon - min_lon) * (width_px - 1)
+        y = (max_lat - lat) / (max_lat - min_lat) * (height_px - 1)
+        point_id = point.get('id', '')
+
+        # Strong marker that remains visible over green, yellow, orange and red rasters.
+        ax.scatter(
+            [x], [y],
+            s=marker_size,
+            facecolors=NAVY,
+            edgecolors='white',
+            linewidths=1.8,
+            zorder=5,
+        )
+        ax.annotate(
+            f'P{point_id}',
+            xy=(x, y),
+            xytext=(0, -15),
+            textcoords='offset points',
+            ha='center',
+            va='top',
+            fontsize=label_font,
+            fontweight='bold',
+            color='white',
+            bbox={
+                'boxstyle': 'round,pad=0.25',
+                'facecolor': NAVY,
+                'edgecolor': 'white',
+                'linewidth': 1.1,
+            },
+            zorder=6,
+        )
+
+    ax.set_xlim(-0.5, width_px - 0.5)
+    ax.set_ylim(height_px - 0.5, -0.5)
+    ax.axis('off')
+
+    output = io.BytesIO()
+    fig.savefig(output, format='png', dpi=dpi, facecolor='white', pad_inches=0)
+    plt.close(fig)
+    return output.getvalue()
 
 
 def _rl_image(data: bytes, max_width=180*mm, max_height=108*mm):
@@ -246,9 +357,9 @@ def create_pdf_report(
     story += [Paragraph('Resumo executivo', styles['H2']), Paragraph(summary, styles['Callout'])]
 
     if images.get('main_current'):
-        story += [Paragraph('Mapa atual - índice selecionado', styles['H2']), _rl_image(images['main_current']), Paragraph('Camada analítica do Earth Engine com limite do talhão. O mapa-base não é incluído no relatório para manter a exportação reproduzível.', styles['Small'])]
+        story += [Paragraph('Mapa atual - índice selecionado', styles['H2']), _rl_image(images['main_current']), Paragraph('Camada analítica do Earth Engine com limite do talhão. Os marcadores P1, P2, P3... correspondem aos pontos de investigação listados na tabela do relatório.', styles['Small'])]
     if images.get('main_history'):
-        story += [Paragraph('Recorrência histórica - mesmo índice', styles['H2']), _rl_image(images['main_history']), Paragraph('A recorrência representa a frequência espacial da anomalia nos cinco anos anteriores, condicionada aos anos válidos.', styles['Small'])]
+        story += [Paragraph('Recorrência histórica - mesmo índice', styles['H2']), _rl_image(images['main_history']), Paragraph('A recorrência representa a frequência espacial da anomalia nos cinco anos anteriores. Os marcadores P1, P2, P3... mostram onde investigar em campo.', styles['Small'])]
     if images.get('main_chart'):
         story += [Paragraph('Série histórica', styles['H2']), _rl_image(images['main_chart'], max_height=85*mm)]
 
@@ -278,6 +389,132 @@ def create_pdf_report(
     doc.build(story)
     return out.getvalue()
 
+
+
+def build_quick_bundle(
+    *,
+    logo_path: Path,
+    field_name: str,
+    geometry: dict,
+    parameters: dict,
+    main_points: list,
+    main_trend: list,
+    concord_points: list,
+    concord_trend: list,
+    map_specs: list | None = None,
+    progress_cb=None,
+) -> tuple[bytes, list[str]]:
+    """Build the fast LandVision archive.
+
+    Designed for routine field work. It intentionally avoids GeoJSON region
+    exports and per-region detail files. Only the two principal Earth Engine
+    map thumbnails are requested; the remaining charts are generated locally
+    from scalar results already returned by the app.
+    """
+    warnings: list[str] = []
+    files: dict[str, bytes] = {}
+    images: dict[str, bytes] = {}
+    safe = slugify(field_name)
+
+    def progress(value: int, message: str):
+        if progress_cb:
+            try:
+                progress_cb(value, message)
+            except Exception:
+                pass
+
+    progress(8, 'Preparando CSV, KML e parâmetros...')
+    files['dados/parametros_analise.json'] = json.dumps(
+        parameters, ensure_ascii=False, indent=2, default=str
+    ).encode('utf-8')
+
+    if main_trend:
+        files['dados/serie_historica.csv'] = csv_bytes(pd.DataFrame(main_trend))
+    if main_points:
+        files['dados/pontos_investigacao.csv'] = csv_bytes(main_points)
+        files['dados/pontos_investigacao.kml'] = kml_points(
+            main_points, 'LandVision - Pontos de investigação'
+        )
+
+    if concord_trend:
+        files['dados/concordancia_serie_historica.csv'] = csv_bytes(
+            pd.DataFrame(concord_trend)
+        )
+    if concord_points:
+        files['dados/concordancia_pontos.csv'] = csv_bytes(concord_points)
+        files['dados/concordancia_pontos.kml'] = kml_points(
+            concord_points, 'LandVision - Concordância multíndice'
+        )
+
+    progress(18, 'Gerando gráficos locais...')
+    main_chart = chart_png(
+        main_trend, 'Área com anomalia por ano', 'pct', '% dos pixels válidos'
+    )
+    if main_chart:
+        images['main_chart'] = main_chart
+        files['imagens/serie_historica.png'] = main_chart
+
+    concord_chart = chart_png(
+        concord_trend,
+        'Área com concordância multíndice por ano',
+        'concordance_pct',
+        '% dos pixels válidos',
+    )
+    if concord_chart:
+        images['concord_chart'] = concord_chart
+        files['imagens/concordancia_serie_historica.png'] = concord_chart
+
+    specs = list(map_specs or [])[:2]
+    if specs:
+        # Two analytical thumbnails are the only network-heavy part of quick export.
+        span = 52
+        for i, spec in enumerate(specs):
+            start = 24 + int(span * i / max(1, len(specs)))
+            end = 24 + int(span * (i + 1) / max(1, len(specs)))
+            progress(start, f"Gerando {spec.get('label', 'mapa')}...")
+            try:
+                png = earth_engine_thumb(
+                    spec['image'], spec['vis'], geometry, dimensions=850
+                )
+                point_source = (
+                    concord_points
+                    if str(spec.get('name', '')).startswith('concord')
+                    else main_points
+                )
+                png = annotate_investigation_points(
+                    png, point_source, geometry, max_points=25
+                )
+                images[spec['name']] = png
+                files[f"imagens/{spec['filename']}"] = png
+            except Exception as exc:
+                warnings.append(
+                    f"Não foi possível gerar {spec.get('filename', spec.get('name'))}: {type(exc).__name__}"
+                )
+            progress(end, f"{spec.get('label', 'Mapa')} concluído.")
+
+    progress(80, 'Montando relatório PDF...')
+    pdf = create_pdf_report(
+        logo_path=logo_path,
+        field_name=field_name,
+        parameters=parameters,
+        main_points=main_points,
+        main_trend=main_trend,
+        concord_points=concord_points,
+        concord_trend=concord_trend,
+        images=images,
+    )
+    files[f'relatorio/Relatorio_LandVision_{safe}.pdf'] = pdf
+
+    readme = f"""LANDVISION - EXPORTAÇÃO RÁPIDA\n\nTalhão: {field_name}\nGerado em: {datetime.now().isoformat(timespec='minutes')}\n\nCONTEÚDO\n- relatorio/: PDF técnico\n- imagens/: mapas principais e gráficos em PNG\n- dados/: CSV, KML e parâmetros usados\n\nMODO RÁPIDO\nEsta exportação prioriza velocidade. GeoJSON, matrizes individuais e mapas adicionais de concordância não são gerados.\n\nIMPORTANTE\nOs resultados espectrais são indicadores exploratórios e devem ser validados em campo.\nNenhuma credencial, chave ou conteúdo do Streamlit Secrets é incluído neste pacote.\n"""
+    files['LEIA-ME.txt'] = readme.encode('utf-8')
+
+    progress(92, 'Compactando arquivos...')
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
+        for filename, data in files.items():
+            zf.writestr(filename, data)
+    progress(100, 'Exportação pronta.')
+    return out.getvalue(), warnings
 
 def build_analysis_bundle(
     *,
@@ -342,6 +579,14 @@ def build_analysis_bundle(
     for spec in map_specs or []:
         try:
             png = earth_engine_thumb(spec['image'], spec['vis'], geometry)
+            point_source = (
+                concord_points
+                if str(spec.get('name', '')).startswith('concord')
+                else main_points
+            )
+            png = annotate_investigation_points(
+                png, point_source, geometry, max_points=25
+            )
             images[spec['name']] = png
             files[f"imagens/{spec['filename']}"] = png
         except Exception as exc:
