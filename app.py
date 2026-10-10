@@ -1,4 +1,4 @@
-"""LandVision V0.8 — Professional UI + complete analysis export over the validated V0.6.1 analytical core."""
+"""LandVision V0.8.2 — Professional UI + fast export; minimum investigation region now configurable from 0.05 ha."""
 import base64
 import csv
 import io
@@ -13,7 +13,7 @@ import pandas as pd
 import streamlit as st
 from folium.plugins import Draw, Fullscreen
 from streamlit_folium import st_folium
-from reporting import build_analysis_bundle, slugify
+from reporting import build_quick_bundle, slugify
 
 from engine import (
     BANDS,
@@ -426,7 +426,7 @@ with st.sidebar:
     st.markdown(
         f'''<div class="brand-shell"><img class="brand-logo" src="{LOGO_URI}">
         <div><div class="brand-name">LANDVISION</div><div class="brand-sub">GDM Seeds · Field Intelligence</div>
-        <span class="side-version">Professional · V0.8</span></div></div>''',
+        <span class="side-version">Professional · V0.8.2</span></div></div>''',
         unsafe_allow_html=True,
     )
 
@@ -507,7 +507,8 @@ with st.sidebar:
     st.markdown('#### 03 · Detector de recorrência')
     min_hits = st.slider('Anomalia em pelo menos X dos 5 anos anteriores', 3, 5, 4)
     min_valid = st.slider('Mínimo de anos com pixels válidos', 3, 5, 3)
-    min_ha = st.number_input('Área mínima das regiões (ha)', .04, 100., .20, step=.10)
+    min_ha = st.number_input('Área mínima das regiões (ha)', .05, 100., .10, step=.01, format='%.2f')
+    st.caption('Mínimo permitido: 0,05 ha · padrão: 0,10 ha. Valores menores aumentam a sensibilidade a manchas pequenas.')
     st.caption('O índice e a direção escolhidos controlam o mapa atual, a recorrência, o gráfico e os pontos.')
     run = st.button('Executar análise', type='primary', use_container_width=True)
 
@@ -540,7 +541,8 @@ with st.sidebar:
         )
         concord_min_years = st.slider('Concordância em pelo menos X dos 5 anos anteriores', 2, 5, 3)
         concord_min_valid = st.slider('Anos válidos mínimos · concordância', 3, 5, 3)
-        concord_min_ha = st.number_input('Área mínima da concordância (ha)', .04, 100., .20, step=.10)
+        concord_min_ha = st.number_input('Área mínima da concordância (ha)', .05, 100., .10, step=.01, format='%.2f')
+        st.caption('Mínimo permitido: 0,05 ha · padrão: 0,10 ha. Valores menores aumentam a sensibilidade a pequenas áreas de concordância.')
         concord_threshold = st.slider('Limiar |Z| da concordância', .5, 2.5, 1.0, .1)
         with st.expander('Direção da anomalia por índice'):
             for name in concord_indices:
@@ -1197,100 +1199,88 @@ if concord:
 
 
 # -----------------------------------------------------------------------------
-# COMPLETE ANALYSIS EXPORT — V0.8
+# QUICK ANALYSIS EXPORT — V0.8.2
 # -----------------------------------------------------------------------------
 if st.session_state.result:
-    st.markdown('<div class="section-banner"><div class="section-kicker">RELATÓRIO E ARQUIVAMENTO</div><div class="section-title">Salvar análise completa</div><div class="section-copy">Gere um único arquivo ZIP com relatório PDF, mapas analíticos, gráficos, CSV, KML, GeoJSON e os parâmetros usados. O processamento só ocorre quando solicitado.</div></div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-banner"><div class="section-kicker">RELATÓRIO E ARQUIVAMENTO</div><div class="section-title">Exportação rápida</div><div class="section-copy">Gere um único ZIP com relatório PDF, os dois mapas principais em PNG, gráficos, CSV, KML e parâmetros. O modo rápido evita GeoJSON, matrizes individuais e mapas extras para reduzir o tempo.</div></div>', unsafe_allow_html=True)
     ex1, ex2, ex3 = st.columns(3)
     ex1.metric('Relatório', 'PDF incluído')
-    ex2.metric('Dados', 'CSV · KML · GeoJSON')
-    ex3.metric('Credenciais', 'Nunca incluídas')
+    ex2.metric('Mapas', '2 PNG principais')
+    ex3.metric('Dados', 'CSV · KML')
 
-    st.caption('As imagens exportadas são camadas analíticas do Earth Engine com o limite do talhão, sem mapa-base de terceiros. Isso torna o pacote mais leve e reproduzível.')
+    st.caption('A parte mais demorada é gerar as imagens do Earth Engine. Por isso o modo rápido limita a exportação aos mapas do índice atual e da recorrência histórica. A concordância continua no PDF e nos CSV/KML quando disponível.')
 
-    if st.button('Preparar análise completa · ZIP', type='primary', use_container_width=True):
+    if st.button('Preparar exportação rápida · ZIP', type='primary', use_container_width=True):
         ok, err = connect()
         if not ok:
             st.error('Earth Engine não conectado. ' + err)
         else:
-            with st.spinner('Gerando mapas, gráficos, PDF e pacote ZIP. Aguarde...'):
-                try:
-                    result_for_export = st.session_state.result
-                    concord_for_export = st.session_state.concord_result
-                    main_params = dict(result_for_export.get('params', {}))
-                    period_label = (
-                        main_params.get('date', '')
-                        if main_params.get('mode') == 'DATA ÚNICA'
-                        else f"{MONTHS[int(main_params.get('m1', 1))-1]} a {MONTHS[int(main_params.get('m2', 1))-1]} de {main_params.get('year', '')}"
-                    )
-                    parameters = {
-                        'app_version': '0.8',
-                        'field_name': field,
-                        'index': result_for_export.get('index'),
-                        'scale': result_for_export.get('scale'),
-                        'period_label': period_label,
-                        'analysis': main_params,
-                        'concordance': ({
-                            'indices': concord_for_export.get('indices', []),
-                            'scale': concord_for_export.get('scale'),
-                            'min_indices': concord_for_export.get('min_indices'),
-                            **concord_for_export.get('params', {}),
-                        } if concord_for_export else None),
-                    }
-                    map_specs = [
-                        {
-                            'name': 'main_current',
-                            'filename': f"mapa_{result_for_export.get('index','indice').lower()}_atual.png",
-                            'image': result_for_export['_ee_current'],
-                            'vis': VIS[result_for_export.get('index', idx)],
-                        },
-                        {
-                            'name': 'main_history',
-                            'filename': 'mapa_recorrencia_historica.png',
-                            'image': result_for_export['_ee_history'],
-                            'vis': RECURRENCE_VIS,
-                        },
-                    ]
-                    if concord_for_export:
-                        map_specs.extend([
-                            {
-                                'name': 'concord_current',
-                                'filename': 'mapa_concordancia_atual.png',
-                                'image': concord_for_export['_ee_current'],
-                                'vis': {
-                                    'min': 0,
-                                    'max': len(concord_for_export.get('indices', [])),
-                                    'palette': CONCORD_PALETTE[:len(concord_for_export.get('indices', [])) + 1],
-                                },
-                            },
-                            {
-                                'name': 'concord_history',
-                                'filename': 'mapa_concordancia_recorrencia.png',
-                                'image': concord_for_export['_ee_history'],
-                                'vis': RECURRENCE_VIS,
-                            },
-                        ])
-                    bundle, warnings = build_analysis_bundle(
-                        logo_path=SYMBOL,
-                        field_name=field,
-                        geometry=st.session_state.geometry,
-                        parameters=parameters,
-                        main_result=result_for_export,
-                        main_points=st.session_state.points,
-                        main_trend=st.session_state.trend,
-                        concord_result=concord_for_export,
-                        concord_points=st.session_state.concord_points,
-                        concord_trend=st.session_state.concord_trend,
-                        region_details=st.session_state.region_details,
-                        concord_details=st.session_state.concord_details,
-                        map_specs=map_specs,
-                    )
-                    st.session_state.export_bundle = bundle
-                    st.session_state.export_warnings = warnings
-                    st.success('Pacote pronto. O ZIP inclui o PDF e todos os arquivos disponíveis desta análise.')
-                except Exception as exc:
-                    logging.exception('LandVision complete export failed')
-                    st.error('Falha ao preparar o pacote (' + type(exc).__name__ + '). Consulte os registros privados; nenhum Secret é incluído na exportação.')
+            progress_bar = st.progress(0, text='Iniciando exportação rápida...')
+            try:
+                result_for_export = st.session_state.result
+                concord_for_export = st.session_state.concord_result
+                main_params = dict(result_for_export.get('params', {}))
+                period_label = (
+                    main_params.get('date', '')
+                    if main_params.get('mode') == 'DATA ÚNICA'
+                    else f"{MONTHS[int(main_params.get('m1', 1))-1]} a {MONTHS[int(main_params.get('m2', 1))-1]} de {main_params.get('year', '')}"
+                )
+                parameters = {
+                    'app_version': '0.8.1',
+                    'export_mode': 'quick',
+                    'field_name': field,
+                    'index': result_for_export.get('index'),
+                    'scale': result_for_export.get('scale'),
+                    'period_label': period_label,
+                    'analysis': main_params,
+                    'concordance': ({
+                        'indices': concord_for_export.get('indices', []),
+                        'scale': concord_for_export.get('scale'),
+                        'min_indices': concord_for_export.get('min_indices'),
+                        **concord_for_export.get('params', {}),
+                    } if concord_for_export else None),
+                }
+                # Quick mode deliberately requests only two Earth Engine images.
+                map_specs = [
+                    {
+                        'name': 'main_current',
+                        'label': 'mapa do índice atual',
+                        'filename': f"mapa_{result_for_export.get('index','indice').lower()}_atual.png",
+                        'image': result_for_export['_ee_current'],
+                        'vis': VIS[result_for_export.get('index', idx)],
+                    },
+                    {
+                        'name': 'main_history',
+                        'label': 'mapa de recorrência histórica',
+                        'filename': 'mapa_recorrencia_historica.png',
+                        'image': result_for_export['_ee_history'],
+                        'vis': RECURRENCE_VIS,
+                    },
+                ]
+
+                def update_export_progress(value, message):
+                    progress_bar.progress(int(value), text=message)
+
+                bundle, warnings = build_quick_bundle(
+                    logo_path=SYMBOL,
+                    field_name=field,
+                    geometry=st.session_state.geometry,
+                    parameters=parameters,
+                    main_points=st.session_state.points,
+                    main_trend=st.session_state.trend,
+                    concord_points=st.session_state.concord_points,
+                    concord_trend=st.session_state.concord_trend,
+                    map_specs=map_specs,
+                    progress_cb=update_export_progress,
+                )
+                st.session_state.export_bundle = bundle
+                st.session_state.export_warnings = warnings
+                progress_bar.progress(100, text='Exportação rápida pronta.')
+                st.success('Pacote pronto. O ZIP contém PDF, imagens principais, CSV e KML.')
+            except Exception as exc:
+                logging.exception('LandVision quick export failed')
+                progress_bar.empty()
+                st.error('Falha ao preparar a exportação rápida (' + type(exc).__name__ + '). Consulte os registros privados; nenhum Secret é incluído na exportação.')
 
     if st.session_state.export_warnings:
         with st.expander('Avisos da exportação'):
@@ -1298,21 +1288,21 @@ if st.session_state.result:
                 st.warning(warning)
 
     if st.session_state.export_bundle:
-        filename = f"LandVision_{slugify(field)}_{date.today().isoformat()}.zip"
+        filename = f"LandVision_{slugify(field)}_{date.today().isoformat()}_rapido.zip"
         st.download_button(
-            'Baixar análise completa · ZIP',
+            'Baixar exportação rápida · ZIP',
             st.session_state.export_bundle,
             filename,
             'application/zip',
             type='primary',
             use_container_width=True,
         )
-        st.caption('O arquivo é gerado em memória e baixado diretamente pelo navegador. Nenhum Secret ou chave JSON entra no pacote.')
+        st.caption('O ZIP é gerado em memória e baixado diretamente pelo navegador. GeoJSON não é incluído no modo rápido.')
 
 
 st.divider()
 st.caption(
-    'LandVision V0.8 Professional · Exportação completa · Núcleo analítico V0.6.1 preservado · Dados: Sentinel-2 SR Harmonized / Google Earth Engine. '
+    'LandVision V0.8.2 Professional · Exportação rápida · Núcleo analítico V0.6.1 preservado · Dados: Sentinel-2 SR Harmonized / Google Earth Engine. '
     'Anomalia espectral e concordância são indicadores exploratórios, não diagnósticos de nematoides, doença, compactação, deficiência ou estresse hídrico. '
     'Considere cultura, rotação, data de plantio, estádio fenológico, solo e cobertura de nuvens.'
 )
